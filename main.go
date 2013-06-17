@@ -2,7 +2,6 @@ package main
 
 import (
 	"bitbucket.org/tebeka/nrsc"
-	"bufio"
 	"fmt"
 	"github.com/ant0ine/go-json-rest"
 	"html/template"
@@ -15,8 +14,7 @@ import (
 func main() {
 	handler := rest.ResourceHandler{}
 	handler.SetRoutes(
-		rest.Route{"GET", "/api/workers", GetAllWorkers},
-		//        rest.Route{"GET", "/workers/:workerName", GetWorker},
+		rest.Route{"GET", "/api/:server/workers", GetAllWorkers},
 	)
 	nrsc.Handle("/static/")
 	http.HandleFunc("/", Index)
@@ -36,26 +34,26 @@ func GetInt(s string) (out int) {
 	return
 }
 
-func (response GearmanResponse) GetWorkerStatuses() (workerStatuses []GearmanWorkerStatus) {
+func (response GearmanResponse) GetWorkerStatuses() []GearmanWorkerStatus {
 	statusLines := strings.Split(response.Response, "\n")
-	for _, line := range statusLines {
+	workerStatuses := make([]GearmanWorkerStatus, len(statusLines))
+	for i, line := range statusLines {
 		lineArray := strings.Fields(line)
-		workerStatus := GearmanWorkerStatus{
-			functionName: lineArray[0],
-			jobTotal:     GetInt(lineArray[1]),
-			jobRunning:   GetInt(lineArray[2]),
-			workerCount:  GetInt(lineArray[3]),
+		workerStatuses[i] = GearmanWorkerStatus{
+			FunctionName: lineArray[0],
+			JobTotal:     GetInt(lineArray[1]),
+			JobRunning:   GetInt(lineArray[2]),
+			WorkerCount:  GetInt(lineArray[3]),
 		}
-		workerStatuses = append(workerStatuses, workerStatus)
 	}
-	return
+	return workerStatuses
 }
 
 type GearmanWorkerStatus struct {
-	functionName string
-	jobTotal     int
-	jobRunning   int
-	workerCount  int
+	FunctionName string
+	JobTotal     int
+	JobRunning   int
+	WorkerCount  int
 }
 
 type GearmanServerInfo struct {
@@ -83,12 +81,25 @@ func Index(w http.ResponseWriter, r *http.Request) {
     <script src="/static/webgearadmin.js"></script>
   </head>
   <body>
-    <h3>WebGearadmin</h3>
+    <h3><a href="https://bitbucket.org/MasonM/webgearadmin">WebGearadmin</a></h3>
     <hr>
     {{ range $data := .ServerInfo }}
-    Server: {{$data.Address}}<br/>
-    PID: {{$data.Pid}}<br/>
-    Version: {{$data.Version}}<br/>
+    <section id="{{$data.Address}}">
+        <h4>Server at {{$data.Address}}</h4>
+        PID: {{$data.Pid}}<br/>
+        Version: {{$data.Version}}<br/>
+        <table name="statuses">
+            <thead>
+                <tr>
+                    <th>Name</th>
+                    <th>Total</th>
+                    <th>Running</th>
+                    <th># Workers</th>
+                </tr>
+            </thead>
+            <tbody></tbody>
+        </table>
+    </section>
     <hr>
     {{ end }}
   </body>
@@ -124,22 +135,24 @@ func SendCommand(cmd, address string) GearmanResponse {
 		print(err.Error())
 		return GearmanResponse{"error"}
 	}
-	fmt.Fprint(conn, cmd + "\n")
-	response, err := bufio.NewReader(conn).ReadString('\n')
-	response = strings.Trim(response, " \n")
-	fmt.Printf("RESPONSE FOR |%s|: |%s|\n", cmd, response)
+	fmt.Fprint(conn, cmd+"\n")
+
+	responseBytes := make([]byte, 1024)
+	_, err = conn.Read(responseBytes)
+	if err != nil {
+		fmt.Printf("Failed to send command \"%s\". Error: %s\n", cmd, err)
+	}
+
+	response := strings.Trim(string(responseBytes), " .\r\n\x00")
 	if cmd == "getpid" || cmd == "version" {
+		// remove leading "OK "
 		response = response[3:]
 	}
+	//fmt.Printf("RESPONSE FOR |%s|: |%s|\n", cmd, response)
 	return GearmanResponse{response}
 }
 
 func GetAllWorkers(w *rest.ResponseWriter, r *rest.Request) {
-	servers := GetServers(r.Request)
-	statuses := make([]GearmanResponse, len(servers))
-	for _, server := range servers {
-		statusResp := SendCommand("status", server)
-		statuses = append(statuses, statusResp)
-	}
-	w.WriteJson(statuses)
+	statusResp := SendCommand("status", r.PathParam("server"))
+	w.WriteJson(statusResp.GetWorkerStatuses())
 }
